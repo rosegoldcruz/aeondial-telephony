@@ -1,0 +1,74 @@
+; ============================================================
+; extensions.conf – Dialplan for AEON progressive auto-dialer
+; ============================================================
+;
+; Context layout
+; ──────────────
+; from-agents   : inbound extensions from agent softphones
+; from-carrier  : inbound DID calls from carrier trunk
+; aeondial-app  : Stasis app context (ARI managed channels land here)
+; dialer-amd    : AMD processing for outbound dialer calls
+;
+; All outbound dialer calls are originated by the backend via ARI.
+; The ARI 'app' arg for originate is "aeondial".
+; After AMD, the dialplan POSTs the result back to the AEON backend.
+;
+; Required environment / globals:
+;   BACKEND_URL    – e.g. http://10.0.0.5:4000
+;   AMD timeouts   – tune for your carrier / traffic mix
+
+[globals]
+BACKEND_URL=${BACKEND_URL}
+AMD_INITIAL_SILENCE=2500
+AMD_GREETING=3000
+AMD_AFTER_GREETING_SILENCE=800
+AMD_MAX_WORD_LENGTH=5000
+AMD_BETWEEN_WORDS_SILENCE=10
+AMD_MAX_WORDS=3
+AMD_SILENCE_THRESHOLD=256
+AMD_MAX_WAIT_FOR_TONEDETECT=500
+
+; ─── from-agents ──────────────────────────────────────────────
+; Calls originated by agents (manual dial or click-to-call)
+[from-agents]
+exten => _X.,1,NoOp(Agent outbound: ${CALLERID(num)} → ${EXTEN})
+ same  => n,Dial(PJSIP/${EXTEN}@trunk-carrier-endpoint,30)
+ same  => n,Hangup()
+
+; ─── from-carrier ─────────────────────────────────────────────
+; Inbound DID calls (optional; for blended call centres)
+[from-carrier]
+exten => _X.,1,NoOp(Inbound DID: ${EXTEN})
+ same  => n,Stasis(aeondial,inbound,${EXTEN})
+ same  => n,Hangup()
+
+; ─── aeondial-app ─────────────────────────────────────────────
+; Channels originated by ARI land here when they first connect.
+; ARI takes full control via Stasis; this context is a pass-through.
+[aeondial-app]
+exten => _X.,1,NoOp(ARI Stasis channel: ${EXTEN})
+ same  => n,Stasis(aeondial)
+ same  => n,Hangup()
+
+; ─── dialer-amd ───────────────────────────────────────────────
+; Outbound progressive dialer – runs AMD then reports to backend.
+; Triggered by the ARI dialplan variables: DIALER_CALL_ID, DIALER_ORG_ID, etc.
+; 
+; To use this dialplan:
+;   Set the ARI 'app' to 'dialer-amd' for outbound dialer calls, OR
+;   trigger AMD() from a Stasis application via GoTo after answering.
+[dialer-amd]
+exten => s,1,NoOp(Dialer AMD context: CALL=${DIALER_CALL_ID} ORG=${DIALER_ORG_ID})
+ same  => n,Answer()
+ same  => n,AMD(${AMD_INITIAL_SILENCE},${AMD_GREETING},${AMD_AFTER_GREETING_SILENCE},${AMD_MAX_WORD_LENGTH},${AMD_BETWEEN_WORDS_SILENCE},${AMD_MAX_WORDS},${AMD_SILENCE_THRESHOLD},${AMD_MAX_WAIT_FOR_TONEDETECT})
+ same  => n,NoOp(AMD Status=${AMDSTATUS} Cause=${AMDCAUSE})
+ same  => n,System(curl -s -X POST "${BACKEND_URL}/dialer/calls/${DIALER_CALL_ID}/amd_result" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "org_id=${DIALER_ORG_ID}" --data-urlencode "result=${AMDSTATUS}" --data-urlencode "cause=${AMDCAUSE}")
+ same  => n,Stasis(aeondial)
+ same  => n,Hangup()
+
+; Explicit AMD outcomes (for b-leg dial in outbound)
+exten => s,n(amd_human),NoOp(AMD = HUMAN)
+ same  => n,Goto(dialer-amd,s,n)
+
+exten => s,n(amd_machine),NoOp(AMD = MACHINE)
+ same  => n,Goto(dialer-amd,s,n)

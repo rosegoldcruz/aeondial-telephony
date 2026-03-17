@@ -1,0 +1,16 @@
+; ============================================================
+; http.conf – Asterisk HTTP / ARI server
+; ============================================================
+[general]
+enabled=yes
+bindaddr=0.0.0.0
+bindport=8088
+
+; TLS – strongly recommended in production
+; tlsenable=yes
+; tlsbindaddr=0.0.0.0:8089
+; tlscertfile=/etc/asterisk/tls/cert.pem
+; tlsprivatekey=/etc/asterisk/tls/key.pem
+
+; ARI is served under /ari
+prefix=

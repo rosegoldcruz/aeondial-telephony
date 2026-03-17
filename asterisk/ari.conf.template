@@ -1,0 +1,14 @@
+; ============================================================
+; ari.conf – Asterisk REST Interface
+; ============================================================
+[general]
+enabled=yes
+; 'allowed_origins' must list every host that makes WebSocket connections.
+; Use comma-separated values for multiple origins.
+allowed_origins=http://localhost:4000,${CRM_ORIGIN}
+
+; ARI credentials  (CHANGE THESE – then set in .env as ARI_USERNAME / ARI_PASSWORD)
+[aeondial]
+type=user
+read_only=no
+password=${ARI_PASSWORD}
