@@ -33,6 +33,9 @@ ARI_ENDPOINT_PREFIX=PJSIP
 DIALER_CPS=5                         # calls per second per worker instance
 DIALER_VOICEMAIL_FILE=vm-drop-demo   # Asterisk sound file for voicemail drop (no extension)
 BACKEND_INTERNAL_URL=http://localhost:4000  # used by dialer engine to set DIALER_BACKEND_URL
+DIALER_OUTBOUND_ENDPOINT_TEMPLATE=PJSIP/{number}@twilio-endpoint
+DIALER_AGENT_BEEP_MEDIA=sound:beep
+DIALER_WRAP_SECONDS=15
 
 # CORS
 CRM_ORIGIN=https://<your-crm-domain>
@@ -57,14 +60,24 @@ Replace `${CRM_ORIGIN}` with your actual CRM domain.
 ### 3. PJSIP trunks and agents  (`/etc/asterisk/pjsip.conf`)
 
 Copy `asterisk/pjsip.conf.template` → `/etc/asterisk/pjsip.conf`.  
-Fill in:
-- `${CARRIER_SIP_HOST}`, `${CARRIER_USERNAME}`, `${CARRIER_PASSWORD}` for your SIP carrier
-- One `[AGENT_EXT]` block per agent softphone or WebRTC client
-- For WebRTC agents add `webrtc=yes` and a WSS transport section
+This template is now pre-shaped for the AEON Twilio Elastic SIP trunk:
+- public droplet IP is set to `137.184.126.46` and should be changed only if the droplet IP changes
+- `twilio-aor` points to `sip:aeondial.pstn.twilio.com`
+- `from_user` is set to `+16236665784`
+- `twilio-auth` is optional and should be kept only if outbound uses a Twilio Credential List
+- `twilio-identify` includes the Twilio IP ranges you supplied and must be kept current with the exact Twilio edges you allow
+- browser softphone endpoints should use the provided `[WEBRTC_AGENT]` example and `transport-wss`
 
 ### 4. Dialplan  (`/etc/asterisk/extensions.conf`)
 
 Copy `asterisk/extensions.conf.template` → `/etc/asterisk/extensions.conf`.  
+This template now includes:
+- `TWILIO_TRUNK=twilio-endpoint`
+- `DEFAULT_CID=+16236665784`
+- `from-internal` for 10-digit / 11-digit / E.164 outbound dialing via Twilio
+- `from-twilio` for a basic inbound answer / echo test
+- the existing `dialer-amd` / Stasis progressive dialer contexts
+
 Update `BACKEND_URL` in the `[globals]` section to point to your backend:
 
 ```
@@ -84,10 +97,25 @@ Tune AMD globals as needed for your carrier's audio profile:
 ### 5. Reload Asterisk
 
 ```bash
-asterisk -rx "module reload"
-asterisk -rx "ari show apps"          # should show 'aeondial'
+asterisk -rx "pjsip reload"
+asterisk -rx "dialplan reload"
+asterisk -rx "ari show apps"          # shows 'aeondial' only after backend ARI websocket is connected
 asterisk -rx "pjsip show endpoints"   # verify trunks and agents
+asterisk -rx "pjsip show aor twilio-aor"
 ```
+
+### 6. RTP  (`/etc/asterisk/rtp.conf`)
+
+Copy `asterisk/rtp.conf.template` → `/etc/asterisk/rtp.conf`.
+
+### 7. Firewall
+
+Open:
+- `5060/udp`
+- `10000-20000/udp`
+
+Allow the Twilio signaling/media IPs for the edges you actually use.  
+Do not leave guessed ranges in production.
 
 ---
 
@@ -172,6 +200,54 @@ curl -X POST http://localhost:4000/dialer/campaigns/$CAMPAIGN_ID/stop \
   -H "x-user-id: $ADMIN_ID" \
   -H "x-role: admin"
 ```
+
+---
+
+## First Internal Test (No Carrier Credentials)
+
+1. Seed one browser agent in `users.metadata.softphone` with:
+   - `endpoint`: `PJSIP/WEBRTC_AGENT`
+   - `sip_uri`: `sip:WEBRTC_AGENT@<asterisk-host>`
+   - `authorization_username`: `WEBRTC_AGENT`
+   - `password`: matching `WEBRTC_AGENT-auth`
+   - `ws_server`: `wss://<asterisk-host>:8089/ws`
+2. Set `DIALER_OUTBOUND_ENDPOINT_TEMPLATE=Local/{number}@aeondial-test`.
+3. Reload Asterisk and start the backend; confirm `ari show apps` lists `aeondial`.
+4. Open the CRM `/dialer` page and wait for the browser softphone to show `Registered`.
+5. Create the agent session from the UI, go READY, and queue one lead with `phone` set to `1000`.
+6. Start the campaign and verify this order:
+   - agent `READY -> RESERVED`
+   - `queue.lead_dialing`
+   - lead answers and backend continues the call into `dialer-amd`
+   - `/dialer/calls/:call_id/amd_result` is hit
+   - `call.human_ready`
+   - agent beep
+   - `call.bridged`
+   - hangup transitions the agent to `WRAP`
+   - disposition returns the agent to `READY`
+
+## First PSTN Live Test
+
+1. Replace `DIALER_OUTBOUND_ENDPOINT_TEMPLATE` with `PJSIP/{number}@twilio-endpoint`.
+2. Install the Twilio trunk values in `pjsip.conf` and confirm the endpoint appears with `pjsip show endpoints`.
+3. Keep one browser agent registered in the CRM dialer and in READY state.
+4. Queue one real PSTN lead and start the campaign.
+5. Verify this order:
+   - backend reserves the agent
+   - Asterisk originates the lead leg
+   - answered lead continues into `dialer-amd`
+   - AMD posts back to backend
+   - HUMAN triggers agent alert leg + beep
+   - lead and agent are bridged
+   - CRM shows live lead + timer
+   - agent hangs up or lead hangs up, agent moves to WRAP
+   - disposition saves and agent returns to READY / auto-next
+
+## What Still Needs External Credentials
+
+- Twilio Elastic SIP Trunk still requires the correct termination URI, caller ID, and optional Credential List values if you use authenticated outbound.
+- Browser agent registration requires a reachable Asterisk WSS endpoint and browser-trusted TLS certs for production.
+- Internal `Local/` tests do not require carrier credentials; they do require the browser agent softphone metadata and ARI connectivity.
 
 ---
 

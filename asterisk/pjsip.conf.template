@@ -1,55 +1,80 @@
 ; ============================================================
-; pjsip.conf – PJSIP configuration for AEON Dial
+; pjsip.conf – Twilio Elastic SIP Trunk + AEON Dial agents
 ; ============================================================
-; Replace ${...} placeholders with real values before deploying.
-; ─── Transport ────────────────────────────────────────────────
+; Replace only the marked values before installing to /etc/asterisk/pjsip.conf.
+
+[global]
+type=global
+user_agent=AEONDIAL
+
+; ---------- TRANSPORT ----------
 [transport-udp]
 type=transport
 protocol=udp
 bind=0.0.0.0:5060
 
-[transport-tcp]
+; Replace with your droplet public IP
+external_signaling_address=137.184.126.46
+external_media_address=137.184.126.46
+
+; Replace with your server LAN if applicable
+local_net=127.0.0.0/8
+
+; Optional browser/WebRTC transport for the AEON CRM softphone
+[transport-wss]
 type=transport
-protocol=tcp
-bind=0.0.0.0:5060
+protocol=wss
+bind=0.0.0.0:8089
+allow_reload=yes
 
-; ─── Outbound SIP trunk (carrier / provider) ──────────────────
-; One section per carrier. Duplicate for additional carriers.
-[trunk-carrier]
-type=registration
-transport=transport-udp
-outbound_auth=trunk-auth
-server_uri=sip:${CARRIER_SIP_HOST}
-client_uri=sip:${CARRIER_USERNAME}@${CARRIER_SIP_HOST}
-retry_interval=60
+; ---------- TWILIO TRUNK ----------
+; Twilio Elastic SIP Trunking does not use Asterisk registration.
+; Send outbound calls to your Twilio termination URI and identify inbound by IP.
 
-[trunk-auth]
-type=auth
-auth_type=userpass
-username=${CARRIER_USERNAME}
-password=${CARRIER_PASSWORD}
-
-[trunk-aor]
+[twilio-aor]
 type=aor
-contact=sip:${CARRIER_SIP_HOST}
+contact=sip:aeondial.pstn.twilio.com
 
-[trunk-carrier-endpoint]
+[twilio-endpoint]
 type=endpoint
 transport=transport-udp
-context=from-carrier
+context=from-twilio
 disallow=all
 allow=ulaw
-allow=g722
-outbound_auth=trunk-auth
-aors=trunk-aor
-from_user=${CARRIER_USERNAME}
+aors=twilio-aor
+outbound_auth=twilio-auth
+from_domain=aeondial.pstn.twilio.com
+from_user=+16236665784
+t38_udptl=no
+direct_media=no
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+trust_id_inbound=yes
+send_pai=yes
+send_rpid=yes
 
-; ─── Agent SIP extensions ─────────────────────────────────────
-; Repeat this section for each agent, replacing AGENT_EXT / AGENT_PASSWORD.
-; For WebRTC agents, add: transport=transport-wss  webrtc=yes
+; Twilio outbound auth via Credential List.
+[twilio-auth]
+type=auth
+auth_type=userpass
+username=AEONDIAL
+password=${TWILIO_CREDENTIAL_PASSWORD}
+
+; Replace these ranges with the exact Twilio signaling IPs for the edge(s) you permit.
+[twilio-identify]
+type=identify
+endpoint=twilio-endpoint
+match=54.172.60.0/23
+match=34.203.250.0/23
+match=54.244.51.0/24
+match=54.171.127.192/26
+
+; ---------- AGENT SIP EXTENSIONS ----------
+; Point agent endpoints at from-internal so the dialplan below can normalize outbound dialing.
 [AGENT_EXT]
 type=endpoint
-context=from-agents
+context=from-internal
 disallow=all
 allow=ulaw
 allow=g722
@@ -66,4 +91,35 @@ password=${AGENT_PASSWORD}
 [AGENT_EXT]
 type=aor
 max_contacts=5
+qualify_frequency=30
+
+; Example browser/WebRTC agent endpoint for the CRM softphone.
+[WEBRTC_AGENT]
+type=endpoint
+transport=transport-wss
+context=from-internal
+disallow=all
+allow=opus
+allow=ulaw
+webrtc=yes
+use_avpf=yes
+media_encryption=dtls
+dtls_auto_generate_cert=yes
+ice_support=yes
+rtcp_mux=yes
+rewrite_contact=yes
+force_rport=yes
+auth=WEBRTC_AGENT-auth
+aors=WEBRTC_AGENT
+
+[WEBRTC_AGENT-auth]
+type=auth
+auth_type=userpass
+username=WEBRTC_AGENT
+password=${WEBRTC_AGENT_PASSWORD}
+
+[WEBRTC_AGENT]
+type=aor
+max_contacts=3
+remove_existing=yes
 qualify_frequency=30

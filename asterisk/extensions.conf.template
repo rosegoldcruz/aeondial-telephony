@@ -4,8 +4,9 @@
 ;
 ; Context layout
 ; ──────────────
-; from-agents   : inbound extensions from agent softphones
-; from-carrier  : inbound DID calls from carrier trunk
+; from-internal : manual outbound calls from agent endpoints
+; from-agents   : compatibility alias into from-internal
+; from-twilio   : inbound DID calls from Twilio
 ; aeondial-app  : Stasis app context (ARI managed channels land here)
 ; dialer-amd    : AMD processing for outbound dialer calls
 ;
@@ -19,6 +20,8 @@
 
 [globals]
 BACKEND_URL=${BACKEND_URL}
+TWILIO_TRUNK=twilio-endpoint
+DEFAULT_CID=+16236665784
 AMD_INITIAL_SILENCE=2500
 AMD_GREETING=3000
 AMD_AFTER_GREETING_SILENCE=800
@@ -28,18 +31,41 @@ AMD_MAX_WORDS=3
 AMD_SILENCE_THRESHOLD=256
 AMD_MAX_WAIT_FOR_TONEDETECT=500
 
-; ─── from-agents ──────────────────────────────────────────────
-; Calls originated by agents (manual dial or click-to-call)
-[from-agents]
-exten => _X.,1,NoOp(Agent outbound: ${CALLERID(num)} → ${EXTEN})
- same  => n,Dial(PJSIP/${EXTEN}@trunk-carrier-endpoint,30)
+; ─── from-internal ────────────────────────────────────────────
+; Manual outbound dialing from agent devices / browser softphones.
+[from-internal]
+exten => _NXXNXXXXXX,1,NoOp(Outbound 10-digit call to Twilio)
+ same  => n,Set(CALLERID(num)=${DEFAULT_CID})
+ same  => n,Dial(PJSIP/+1${EXTEN}@${TWILIO_TRUNK},60)
  same  => n,Hangup()
 
-; ─── from-carrier ─────────────────────────────────────────────
-; Inbound DID calls (optional; for blended call centres)
-[from-carrier]
-exten => _X.,1,NoOp(Inbound DID: ${EXTEN})
- same  => n,Stasis(aeondial,inbound,${EXTEN})
+exten => _1NXXNXXXXXX,1,NoOp(Outbound 11-digit call to Twilio)
+ same  => n,Set(CALLERID(num)=${DEFAULT_CID})
+ same  => n,Dial(PJSIP/+${EXTEN}@${TWILIO_TRUNK},60)
+ same  => n,Hangup()
+
+exten => _+X.,1,NoOp(Outbound E.164 call to Twilio)
+ same  => n,Set(CALLERID(num)=${DEFAULT_CID})
+ same  => n,Dial(PJSIP/${EXTEN}@${TWILIO_TRUNK},60)
+ same  => n,Hangup()
+
+; Keep the existing agent context for older endpoint definitions.
+[from-agents]
+exten => _X.,1,Goto(from-internal,${EXTEN},1)
+
+; ─── from-twilio ─────────────────────────────────────────────
+; Basic inbound Twilio test. Replace with Stasis/inbound routing when ready.
+[from-twilio]
+exten => _+X.,1,NoOp(Inbound from Twilio DID ${EXTEN})
+ same  => n,Answer()
+ same  => n,Playback(demo-thanks)
+ same  => n,Echo()
+ same  => n,Hangup()
+
+exten => s,1,NoOp(Inbound from Twilio to s)
+ same  => n,Answer()
+ same  => n,Playback(demo-thanks)
+ same  => n,Echo()
  same  => n,Hangup()
 
 ; ─── aeondial-app ─────────────────────────────────────────────
@@ -72,3 +98,21 @@ exten => s,n(amd_human),NoOp(AMD = HUMAN)
 
 exten => s,n(amd_machine),NoOp(AMD = MACHINE)
  same  => n,Goto(dialer-amd,s,n)
+
+; ─── aeondial-test ────────────────────────────────────────────
+; Optional Local/ internal-test targets used before carrier credentials exist.
+; Example backend env:
+;   DIALER_OUTBOUND_ENDPOINT_TEMPLATE=Local/{number}@aeondial-test
+; Then use lead phone values such as "1000" or "2000".
+[aeondial-test]
+exten => 1000,1,NoOp(AEON internal human-ish test target)
+ same  => n,Answer()
+ same  => n,Playback(demo-congrats)
+ same  => n,Wait(2)
+ same  => n,Hangup()
+
+exten => 2000,1,NoOp(AEON internal machine-ish test target)
+ same  => n,Answer()
+ same  => n,Playback(vm-intro)
+ same  => n,Wait(2)
+ same  => n,Hangup()
